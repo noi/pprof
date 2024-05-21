@@ -17,9 +17,11 @@
 package transport
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -31,6 +33,7 @@ type transport struct {
 	cert       *string
 	key        *string
 	ca         *string
+	unixSocket *string
 	caCertPool *x509.CertPool
 	certs      []tls.Certificate
 	initOnce   sync.Once
@@ -39,7 +42,8 @@ type transport struct {
 
 const extraUsage = `    -tls_cert             TLS client certificate file for fetching profile and symbols
     -tls_key              TLS private key file for fetching profile and symbols
-    -tls_ca               TLS CA certs file for fetching profile and symbols`
+    -tls_ca               TLS CA certs file for fetching profile and symbols
+    -unix_socket          Unix domain socket file for fetching profile and symbols`
 
 // New returns a round tripper for making requests with the
 // specified cert, key, and ca. The flags tls_cert, tls_key, and tls_ca are
@@ -52,9 +56,10 @@ func New(flagset plugin.FlagSet) http.RoundTripper {
 	}
 	flagset.AddExtraUsage(extraUsage)
 	return &transport{
-		cert: flagset.String("tls_cert", "", "TLS client certificate file for fetching profile and symbols"),
-		key:  flagset.String("tls_key", "", "TLS private key file for fetching profile and symbols"),
-		ca:   flagset.String("tls_ca", "", "TLS CA certs file for fetching profile and symbols"),
+		cert:       flagset.String("tls_cert", "", "TLS client certificate file for fetching profile and symbols"),
+		key:        flagset.String("tls_key", "", "TLS private key file for fetching profile and symbols"),
+		ca:         flagset.String("tls_ca", "", "TLS CA certs file for fetching profile and symbols"),
+		unixSocket: flagset.String("unix_socket", "", "Unix domain socket file for fetching profile and symbols"),
 	}
 }
 
@@ -97,6 +102,8 @@ func (tr *transport) initialize() error {
 	return nil
 }
 
+var zeroDialer net.Dialer
+
 // RoundTrip executes a single HTTP transaction, returning
 // a Response for the provided Request.
 func (tr *transport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -122,9 +129,17 @@ func (tr *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		req.URL.Scheme = "https"
 	}
 
+	dialContext := zeroDialer.DialContext
+	if tr.unixSocket != nil && *tr.unixSocket != "" {
+		dialContext = func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return zeroDialer.DialContext(ctx, "unix", *tr.unixSocket)
+		}
+	}
+
 	transport := http.Transport{
 		Proxy:           http.ProxyFromEnvironment,
 		TLSClientConfig: tlsConfig,
+		DialContext:     dialContext,
 	}
 
 	return transport.RoundTrip(req)
